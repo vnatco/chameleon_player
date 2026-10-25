@@ -15,6 +15,7 @@
   import GenresView from "./GenresView.svelte";
   import LibSettings from "./LibSettings.svelte";
   import MissingView from "./MissingView.svelte";
+  import QueueView from "./QueueView.svelte";
   import SongsView from "./SongsView.svelte";
 
   let { oncollapse, onedit }: { oncollapse: () => void; onedit: () => void } = $props();
@@ -28,6 +29,7 @@
     ["artists", "Artists"],
     ["songs", "Songs"],
     ["genres", "Genres"],
+    ["queue", "Queue"],
     ["missing", "Missing Covers"],
     ["settings", "Settings"],
   ];
@@ -36,6 +38,7 @@
     artistFilter = null;
     genreFilter = null;
     lib.album = null;
+    lib.clearSelection();
     scroller?.scrollTo({ top: 0 });
   }
   const sel = (v: LibView) => app.libView === v || (v === "albums" && app.libView === "album");
@@ -80,6 +83,10 @@
   export function escape(): boolean {
     if (searchOpen && query) {
       searchOpen = false;
+      return true;
+    }
+    if (lib.selIds.size) {
+      lib.clearSelection();
       return true;
     }
     return false;
@@ -174,8 +181,13 @@
           {/if}
           {#if results.songs.length}
             <div class="eyebrow g">Songs</div>
-            {#each results.songs as t (t.id)}
-              <button class="res" onmousedown={(e) => e.preventDefault()} onclick={() => (app.playOne(t), closeSearch())}>
+            {#each results.songs as t, i (t.id)}
+              <button
+                class="res"
+                onmousedown={(e) => e.preventDefault()}
+                onclick={() => (app.playOne(t), closeSearch())}
+                oncontextmenu={(e) => lib.openTrackMenu(e, results!.songs, i)}
+              >
                 <span class="rt">{#if t.cover}<img src={coverUrl(t.cover.thumb)} alt="" />{:else}{mono(t.title)}{/if}</span>
                 <span class="rw"><span class="ellipsis">{t.title}</span><span class="ellipsis subtle">Song · {t.artist}</span></span>
               </button>
@@ -259,7 +271,10 @@
       <Slider value={app.status?.volume ?? 0} label="Volume" oninput={(v) => app.setVolume(v)} />
     </div>
     {#if upNext.length}
-      <div class="eyebrow upn">Up Next</div>
+      <div class="upn">
+        <span class="eyebrow">Up Next</span>
+        <button class="all" onclick={() => setTab("queue")}>Show All {app.queue.length}</button>
+      </div>
       <div class="next">
         {#each upNext as { q, j } (j)}
           <button class="nrow" onclick={() => app.cmd({ type: "playIndex", index: j })}>
@@ -280,6 +295,7 @@
           <button role="tab" aria-selected={sel(v)} class:sel={sel(v)} class:right={v === "settings"} onclick={() => setTab(v)}>
             <span>{label}</span>
             {#if v === "missing" && missingCount}<span class="badge">{missingCount}</span>{/if}
+            {#if v === "queue" && app.queue.length}<span class="count">{app.queue.length}</span>{/if}
             <span class="tbar"></span>
           </button>
         {/each}
@@ -327,6 +343,8 @@
               genreFilter = g;
             }}
           />
+        {:else if app.libView === "queue"}
+          <QueueView {scroller} />
         {:else if app.libView === "missing"}
           <MissingView />
         {:else if app.libView === "settings"}
@@ -334,6 +352,16 @@
         {/if}
       {/if}
     </div>
+    {#if lib.selIds.size}
+      {@const n = lib.selected.length}
+      <div class="selbar" role="toolbar" aria-label="Selected Songs">
+        <span class="seln">{n} {n === 1 ? "Song" : "Songs"} Selected</span>
+        <button class="btn primary sm" onclick={() => (app.playList(lib.selected, 0), lib.clearSelection())}><Icon name="play" size={12} />Play</button>
+        <button class="btn secondary sm" onclick={() => (app.enqueue(lib.selected, true), lib.clearSelection())}><Icon name="playnext" size={14} />Play Next</button>
+        <button class="btn secondary sm" onclick={() => (app.enqueue(lib.selected, false), lib.clearSelection())}><Icon name="add" size={14} />Add to Queue</button>
+        <button class="ib selx" onclick={() => lib.clearSelection()} aria-label="Clear Selection" title="Clear Selection (Esc)"><Icon name="close" size={12} stroke={2} /></button>
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -581,6 +609,64 @@
 
   .upn {
     margin-top: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .all {
+    border: 0;
+    background: transparent;
+    padding: 2px 4px;
+    margin-right: -4px;
+    border-radius: 4px;
+    font-size: 11.5px;
+    color: var(--ch-text-subtle);
+    cursor: pointer;
+  }
+  .all:hover {
+    color: var(--ch-text);
+    background: var(--ch-hover);
+  }
+  .count {
+    margin-left: 6px;
+    font-size: 11px;
+    color: var(--ch-text-subtle);
+    font-variant-numeric: tabular-nums;
+  }
+  .selbar {
+    /* Centered without a transform: the fade-in animation owns transform. */
+    position: absolute;
+    left: 0;
+    right: 0;
+    width: fit-content;
+    margin: 0 auto;
+    bottom: 18px;
+    z-index: 15;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 8px 8px 16px;
+    border-radius: 8px;
+    background: var(--ch-surface);
+    border: 1px solid var(--ch-hairline);
+    box-shadow: 0 14px 40px rgb(0 0 0 / 0.4);
+    white-space: nowrap;
+    animation: chFadeIn 0.14s ease-out both;
+  }
+  .seln {
+    font-size: 13px;
+    font-weight: 600;
+    margin-right: 6px;
+  }
+  .selbar .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .selx {
+    width: 28px;
+    height: 28px;
+    padding: 8px;
   }
   .next {
     display: flex;

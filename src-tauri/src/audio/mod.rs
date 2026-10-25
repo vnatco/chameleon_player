@@ -89,6 +89,11 @@ pub enum Command {
     /// Insert tracks at `at` (clamped to the queue length); optionally start
     /// playing the first inserted track.
     Insert { tracks: Vec<Track>, at: usize, play: bool },
+    /// Remove these queue indices. Removing the current track moves on to the
+    /// one after it (keeping play/pause), or stops at the end of the queue.
+    Remove(Vec<usize>),
+    /// Move the track at `from` so it ends up at index `to`.
+    Move { from: usize, to: usize },
     Play,
     Pause,
     Toggle,
@@ -237,6 +242,21 @@ impl Engine {
                     self.fix_preload();
                 }
             }
+            Command::Remove(indices) => self.remove(indices),
+            Command::Move { from, to } => {
+                let len = self.queue.len();
+                if from >= len || to >= len || from == to {
+                    return;
+                }
+                let t = self.queue.remove(from);
+                self.queue.insert(to, t);
+                let map = |i: usize| moved_index(i, from, to);
+                self.index = self.index.map(map);
+                self.preloaded = self.preloaded.map(map);
+                self.preload_failed = self.preload_failed.map(map);
+                self.queue_changed();
+                self.fix_preload();
+            }
             Command::Play => self.play(),
             Command::Pause => {
                 if let Some(p) = &self.player {
@@ -370,6 +390,70 @@ impl Engine {
         self.index = None;
     }
 
+    fn remove(&mut self, mut indices: Vec<usize>) {
+        indices.sort_unstable();
+        indices.dedup();
+        indices.retain(|&i| i < self.queue.len());
+        if indices.is_empty() {
+            return;
+        }
+        let playing = self.state() == PlayState::Playing;
+        let current_gone = self.index.is_some_and(|i| indices.binary_search(&i).is_ok());
+        // The preloaded track is already inside the audio pipeline; if it goes,
+        // the pipeline must be rebuilt or it would still play.
+        let preload_gone = self.preloaded.is_some_and(|i| indices.binary_search(&i).is_ok());
+        let old_index = self.index;
+
+        let mut i = 0;
+        self.queue.retain(|_| {
+            let keep = indices.binary_search(&i).is_err();
+            i += 1;
+            keep
+        });
+        let map = |i: usize| index_after_remove(i, &indices);
+        self.preloaded = self.preloaded.and_then(map);
+        self.preload_failed = self.preload_failed.and_then(map);
+        self.queue_changed();
+
+        if self.queue.is_empty() {
+            self.stop();
+            self.index = None;
+            self.duration = None;
+            return;
+        }
+        if current_gone {
+            // Whatever followed the removed track now sits at its old place.
+            let cur = old_index.unwrap_or(0);
+            let next = cur - indices.iter().filter(|&&r| r < cur).count();
+            if next < self.queue.len() {
+                self.start(next, playing);
+            } else if self.repeat == Repeat::All {
+                self.start(0, playing);
+            } else {
+                self.stop();
+                self.index = Some(self.queue.len() - 1);
+                self.duration = self.queue[self.queue.len() - 1].duration;
+            }
+            return;
+        }
+        self.index = self.index.and_then(map);
+        if preload_gone {
+            self.rebuild();
+        } else {
+            self.fix_preload();
+        }
+    }
+
+    /// Rebuild the player at the current track and position (drops anything
+    /// preloaded behind it).
+    fn rebuild(&mut self) {
+        let (pos, paused) = (self.position(), self.state() == PlayState::Paused);
+        if let Some(i) = self.index {
+            self.start(i, !paused);
+            self.seek(pos);
+        }
+    }
+
     fn queue_changed(&mut self) {
         self.queue_id += 1;
         *self.shared_queue.lock() = self.queue.clone();
@@ -395,11 +479,7 @@ impl Engine {
         if self.preloaded.is_none() || self.preloaded == self.next_index(false) {
             return;
         }
-        let (pos, paused) = (self.position(), self.state() == PlayState::Paused);
-        if let Some(i) = self.index {
-            self.start(i, !paused);
-            self.seek(pos);
-        }
+        self.rebuild();
     }
 
     fn preload(&mut self) {
@@ -509,6 +589,28 @@ impl Engine {
     }
 }
 
+/// Where queue index `i` ends up after the indices in `removed` (sorted,
+/// unique) are taken out; None if `i` itself was removed.
+fn index_after_remove(i: usize, removed: &[usize]) -> Option<usize> {
+    match removed.binary_search(&i) {
+        Ok(_) => None,
+        Err(before) => Some(i - before),
+    }
+}
+
+/// Where queue index `i` ends up after the track at `from` moves to `to`.
+fn moved_index(i: usize, from: usize, to: usize) -> usize {
+    if i == from {
+        to
+    } else if from < i && i <= to {
+        i - 1
+    } else if to <= i && i < from {
+        i + 1
+    } else {
+        i
+    }
+}
+
 fn next_index(i: usize, len: usize, repeat: Repeat, manual: bool) -> Option<usize> {
     if len == 0 {
         return None;
@@ -555,6 +657,34 @@ mod tests {
         assert_eq!(next_index(2, 3, Repeat::One, true), Some(0), "Next button moves on and wraps");
         assert_eq!(next_index(0, 1, Repeat::All, false), Some(0));
         assert_eq!(next_index(0, 0, Repeat::All, false), None);
+    }
+
+    #[test]
+    fn remove_remaps_indices() {
+        let removed = [1, 3];
+        assert_eq!(index_after_remove(0, &removed), Some(0));
+        assert_eq!(index_after_remove(1, &removed), None);
+        assert_eq!(index_after_remove(2, &removed), Some(1));
+        assert_eq!(index_after_remove(3, &removed), None);
+        assert_eq!(index_after_remove(4, &removed), Some(2));
+    }
+
+    #[test]
+    fn move_remaps_indices() {
+        // [a b c d e], move b (1) to 3 -> [a c d b e]
+        let order: Vec<usize> = (0..5).map(|i| moved_index(i, 1, 3)).collect();
+        assert_eq!(order, vec![0, 3, 1, 2, 4]);
+        // Move d (3) to 0 -> [d a b c e]
+        let order: Vec<usize> = (0..5).map(|i| moved_index(i, 3, 0)).collect();
+        assert_eq!(order, vec![1, 2, 3, 0, 4]);
+        // Every move is a permutation.
+        for from in 0..5 {
+            for to in 0..5 {
+                let mut seen: Vec<usize> = (0..5).map(|i| moved_index(i, from, to)).collect();
+                seen.sort_unstable();
+                assert_eq!(seen, vec![0, 1, 2, 3, 4], "from {from} to {to}");
+            }
+        }
     }
 
     #[test]

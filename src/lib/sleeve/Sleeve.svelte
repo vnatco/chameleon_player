@@ -19,7 +19,24 @@
     drop = null,
     pointerInside = true,
     onlibrary,
-  }: { inLibrary?: boolean; drop?: DropState; pointerInside?: boolean; onlibrary: () => void } = $props();
+    glowAs = null,
+    glowScale = 1,
+    glowInstant = false,
+    glowEdge = null,
+  }: {
+    inLibrary?: boolean;
+    drop?: DropState;
+    pointerInside?: boolean;
+    onlibrary: () => void;
+    /** During the library morph: which look the glow has (else it follows inLibrary). */
+    glowAs?: "player" | "library" | null;
+    /** Reach multiplier that cancels the morph's scale transform. */
+    glowScale?: number;
+    /** Apply glow changes without their transitions. */
+    glowInstant?: boolean;
+    /** Room (px, in the sleeve's own units) between the cover and the window edge. */
+    glowEdge?: number | null;
+  } = $props();
 
   // ---- Hover & idle (controls hide after 2.6 s without movement) ----------
   let hover = $state(false);
@@ -80,19 +97,20 @@
   const k = $derived(app.ui.glow);
   const hasTrack = $derived(!!app.status?.track);
   const pausedLook = $derived(hasTrack && !app.playing);
+  const libGlow = $derived(glowAs ? glowAs === "library" : inLibrary);
   const glowOpacity = $derived.by(() => {
     if (k < 0.04) return 0;
     let go = 0.35 + 0.65 * k;
     if (app.loading) go *= 0.5;
     else if (pausedLook) go *= 0.55;
-    if (inLibrary) go *= 0.7;
+    if (libGlow) go *= 0.7;
     return go;
   });
   const glowReach = $derived.by(() => {
     if (k < 0.04) return 0;
     let gk = 0.45 + 0.55 * k;
-    if (inLibrary) gk *= 0.5;
-    return gk * (inLibrary ? REACH.normal : REACH[app.ui.size]);
+    if (libGlow) gk *= 0.5;
+    return gk * (libGlow ? REACH.normal : REACH[app.ui.size]) * glowScale;
   });
   let dip = $state(0);
   let lastFlip = false;
@@ -146,6 +164,7 @@
         ? [{ label: "Play", sub: "" }]
         : [
             { label: "Play Now", sub: "Replaces the Queue" },
+            { label: "Add to Queue", sub: "Skips Songs Already Queued" },
             { label: "Add to Library", sub: "Folders are watched for new files." },
           ],
   );
@@ -167,7 +186,7 @@
   }}
   onfocusout={() => (focusIn = false)}
 >
-  <Glow reach={glowReach} opacity={glowOpacity} breathing={pausedLook && !app.loading} pulse={app.ui.pulse && app.playing} level={() => app.level} {dip} anim={app.anim} />
+  <Glow reach={glowReach} opacity={glowOpacity} breathing={pausedLook && !app.loading} pulse={app.ui.pulse && app.playing} level={() => app.level} {dip} anim={app.anim} instant={glowInstant} edge={glowEdge} />
 
   <div class="persp">
     <div class="flipper" class:flipped class:still={!app.anim} class:instant>

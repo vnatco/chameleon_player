@@ -6,6 +6,7 @@ import {
   coverUrl,
   type Cover,
   type DefaultStatus,
+  type Enqueued,
   type Folder,
   type Palette,
   type QueueItem,
@@ -21,15 +22,18 @@ import { PaletteDriver, prepare } from "./palette";
 export type Size = "mini" | "normal" | "large";
 export type Mode = "player" | "library";
 export type BackTab = "info" | "queue" | "edit" | "settings";
-export type LibView = "albums" | "album" | "artists" | "songs" | "genres" | "missing" | "settings";
+export type LibView = "albums" | "album" | "artists" | "songs" | "genres" | "queue" | "missing" | "settings";
 
 /** Cover edge length and glow margin per size (spec B). */
 export const SIZES: Record<Size, number> = { mini: 160, normal: 360, large: 640 };
 export const MARGINS: Record<Size, number> = { mini: 40, normal: 80, large: 110 };
-/** Glow reach multiplier per size (--gs). */
-export const REACH: Record<Size, number> = { mini: 0.42, normal: 1, large: 1.45 };
+/** Glow reach multiplier per size (--gs). Large is held back so its glow
+ * fades out inside the 110 px around the cover (see PLAYER_WIN). */
+export const REACH: Record<Size, number> = { mini: 0.42, normal: 1, large: 0.9 };
 /** The player window is fixed at the largest sleeve plus its margin, so size
- * changes are pure CSS and never resize the OS window. */
+ * changes are pure CSS and never resize the OS window. It can't grow: at 125%
+ * display scaling on a 1080p screen, Windows caps a window at about 873
+ * logical px, so 860 is already close to the limit. */
 export const PLAYER_WIN = SIZES.large + 2 * MARGINS.large;
 export const LIB_DEFAULT = { w: 1200, h: 800 };
 /** Where the cover sits in the library rail. */
@@ -410,6 +414,49 @@ class AppState {
     this.guard(api.insert([trackOf(t)], at, true));
   }
 
+  // ---- Queue ----------------------------------------------------------------
+
+  /** Add songs right after the current one (`next`) or at the end of the
+   * queue. Songs already queued are skipped. */
+  async enqueue(list: TrackRow[], next: boolean) {
+    const r = await this.guard(api.enqueue(list.map(trackOf), next));
+    if (r) this.notify(enqueuedText(r, next));
+  }
+
+  /** Same for dropped files and folders. */
+  async enqueuePaths(paths: string[], next: boolean) {
+    const r = await this.guard(api.enqueuePaths(paths, next));
+    if (r) this.notify(enqueuedText(r, next));
+  }
+
+  /** Optimistic local edit; the backend's status event refetches the queue. */
+  private editQueue(edit: (q: QueueItem[]) => QueueItem[]) {
+    this.queue = edit([...this.queue]);
+  }
+
+  removeFromQueue(indices: number[]) {
+    if (!indices.length) return;
+    const gone = new Set(indices);
+    this.editQueue((q) => q.filter((_, i) => !gone.has(i)));
+    this.cmd({ type: "remove", indices });
+  }
+
+  moveInQueue(from: number, to: number) {
+    if (from === to) return;
+    this.editQueue((q) => {
+      const [t] = q.splice(from, 1);
+      q.splice(to, 0, t);
+      return q;
+    });
+    this.cmd({ type: "move", from, to });
+  }
+
+  /** Everything except the song that is playing (or paused). */
+  clearQueue() {
+    const cur = this.status?.track ? this.status.index : null;
+    this.removeFromQueue(this.queue.map((_, i) => i).filter((i) => i !== cur));
+  }
+
   // ---- Sleeve ---------------------------------------------------------------
 
   flip(tab?: BackTab) {
@@ -461,6 +508,15 @@ function fromRow(r: TrackRow): NowPlaying {
     cover: r.cover,
     inLibrary: true,
   };
+}
+
+const songs = (n: number) => `${n} ${n === 1 ? "Song" : "Songs"}`;
+
+/** The toast after adding to the queue. */
+export function enqueuedText({ added, skipped }: Enqueued, next: boolean) {
+  if (!added) return skipped === 1 ? "Already in the Queue" : `All ${skipped} Songs Are Already in the Queue`;
+  const what = next ? `${songs(added)} Will Play Next` : `Added ${songs(added)} to the Queue`;
+  return skipped ? `${what}, ${skipped} Already Queued` : what;
 }
 
 export const trackOf = (t: TrackRow): Track => ({ id: t.id, path: t.path, duration: t.duration || null });

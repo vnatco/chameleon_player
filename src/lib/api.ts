@@ -269,9 +269,17 @@ export interface Frame extends Rect {
   maximized: boolean;
 }
 
+export interface Enqueued {
+  added: number;
+  /** Songs left out because they were already in the queue. */
+  skipped: number;
+}
+
 export type PlayerCommand =
   | { type: "play" | "pause" | "toggle" | "next" | "prev" | "stop" }
   | { type: "playIndex"; index: number }
+  | { type: "remove"; indices: number[] }
+  | { type: "move"; from: number; to: number }
   | { type: "seek"; position: number }
   | { type: "setVolume"; volume: number }
   | { type: "setRepeat"; repeat: Repeat }
@@ -310,6 +318,8 @@ export const api = {
   load: (queue: Track[], index: number, autoplay = true) => invoke<void>("player_load", { queue, index, autoplay }),
   insert: (tracks: Track[], at: number, play: boolean) => invoke<void>("player_insert", { tracks, at, play }),
   queue: () => invoke<QueueItem[]>("player_queue"),
+  enqueue: (tracks: Track[], next: boolean) => invoke<Enqueued>("player_enqueue", { tracks, next }),
+  enqueuePaths: (paths: string[], next: boolean) => invoke<Enqueued>("player_enqueue_paths", { paths, next }),
   player: (command: PlayerCommand) => invoke<void>("player", { command }),
   status: () => invoke<Status>("player_status"),
   openPaths: (paths: string[]) => invoke<number>("open_paths", { paths }),
@@ -321,6 +331,7 @@ export const api = {
   windowHit: (rects: Rect[]) => invoke<void>("window_hit", { rects }),
   windowFrame: () => invoke<Frame>("window_frame"),
   windowSetFrame: (r: Rect) => invoke<Frame>("window_set_frame", { ...r }),
+  windowGlide: (x: number, y: number, ms: number) => invoke<void>("window_glide", { x, y, ms }),
   windowChrome: (library: boolean, mica: boolean) => invoke<void>("window_chrome", { library, mica }),
   windowOnTop: (on: boolean) => invoke<void>("window_set_on_top", { on }),
   windowToggleMaximize: () => invoke<Frame>("window_toggle_maximize"),

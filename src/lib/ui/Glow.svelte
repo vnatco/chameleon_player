@@ -21,6 +21,8 @@
     level = () => 0,
     dip = 0,
     anim = true,
+    instant = false,
+    edge = null,
   }: {
     /** Glow reach R (intensity x size scale). */
     reach: number;
@@ -33,6 +35,11 @@
     /** Increment to play the flip dip. */
     dip?: number;
     anim?: boolean;
+    /** Jump to new colors and reach without transitions. */
+    instant?: boolean;
+    /** Room (px) between the cover and the window edge; the glow fades out
+     * before it, so a strong glow never ends in a hard cut. */
+    edge?: number | null;
   } = $props();
 
   let pulseEl: HTMLDivElement | undefined = $state();
@@ -93,21 +100,23 @@
 </script>
 
 {#if reach > 0 && opacity > 0}
-  <div class="glow" style:opacity={outer} style:--R={reach}>
-    <div class="breathe" class:on={breathing && anim}>
-      <div class="dip" bind:this={dipEl}>
-        <div class="pulse" bind:this={pulseEl}>
-          <div class="set far">
-            <div class="slab l"></div>
-            <div class="slab b"></div>
-            <div class="slab r"></div>
-            <div class="slab t"></div>
-          </div>
-          <div class="set near">
-            <div class="slab l"></div>
-            <div class="slab b"></div>
-            <div class="slab r"></div>
-            <div class="slab t"></div>
+  <div class="glow" class:instant class:edged={edge != null} style:opacity={outer} style:--R={reach} style:--edge={edge != null ? `${edge}px` : null}>
+    <div class="area">
+      <div class="breathe" class:on={breathing && anim}>
+        <div class="dip" bind:this={dipEl}>
+          <div class="pulse" bind:this={pulseEl}>
+            <div class="set far">
+              <div class="slab l"></div>
+              <div class="slab b"></div>
+              <div class="slab r"></div>
+              <div class="slab t"></div>
+            </div>
+            <div class="set near">
+              <div class="slab l"></div>
+              <div class="slab b"></div>
+              <div class="slab r"></div>
+              <div class="slab t"></div>
+            </div>
           </div>
         </div>
       </div>
@@ -122,6 +131,23 @@
     pointer-events: none;
     transition: opacity 0.4s;
     contain: layout style;
+  }
+  /* Bounded: the box reaches the window edge and a mask fades the glow out
+     over the outer third of that room. */
+  .glow.edged {
+    inset: calc(var(--edge) * -1);
+    --f: calc(var(--edge) * 0.33);
+    mask-image:
+      linear-gradient(to right, transparent, #000 var(--f), #000 calc(100% - var(--f)), transparent),
+      linear-gradient(to bottom, transparent, #000 var(--f), #000 calc(100% - var(--f)), transparent);
+    mask-composite: intersect;
+  }
+  .area {
+    position: absolute;
+    inset: 0;
+  }
+  .edged > .area {
+    inset: var(--edge);
   }
   .breathe,
   .dip,
@@ -180,6 +206,11 @@
   .r {
     translate: var(--o) 0;
     background: linear-gradient(to bottom, var(--ch-glow-r-0), var(--ch-glow-r-1), var(--ch-glow-r-2));
+  }
+  .instant,
+  .instant .set,
+  .instant .slab {
+    transition: none;
   }
   @media (prefers-reduced-motion: reduce) {
     .breathe.on {

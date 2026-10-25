@@ -24,6 +24,63 @@ class LibraryData {
   /** Album key whose tile just received a cover (bloom animation). */
   flash = $state<string | null>(null);
   finding = $state(false);
+
+  // ---- Song selection (Songs and album track lists) -------------------------
+  /** The list the selection belongs to, so actions keep its order. */
+  private selScope: TrackRow[] = [];
+  private anchor: number | null = null;
+  selIds = $state<Set<number>>(new Set());
+  /** Right-click menu for songs, in window coordinates. */
+  trackMenu = $state<{ x: number; y: number; tracks: TrackRow[] } | null>(null);
+
+  get selected(): TrackRow[] {
+    return this.selScope.filter((t) => this.selIds.has(t.id));
+  }
+
+  clearSelection() {
+    if (this.selIds.size) this.selIds = new Set();
+    this.anchor = null;
+  }
+
+  /** Ctrl+click toggles a song, Shift+click selects a range. Returns false
+   * for a plain click, which plays the song as before. */
+  select(e: MouseEvent, list: TrackRow[], i: number): boolean {
+    const ctrl = e.ctrlKey || e.metaKey;
+    if (!ctrl && !e.shiftKey) {
+      this.clearSelection();
+      return false;
+    }
+    if (list !== this.selScope) {
+      this.selScope = list;
+      this.selIds = new Set();
+      this.anchor = null;
+    }
+    const ids = new Set(e.shiftKey ? (ctrl ? this.selIds : []) : this.selIds);
+    if (e.shiftKey && this.anchor != null) {
+      const [a, b] = this.anchor < i ? [this.anchor, i] : [i, this.anchor];
+      for (let k = a; k <= b; k++) ids.add(list[k].id);
+    } else {
+      const id = list[i].id;
+      if (ids.has(id)) ids.delete(id);
+      else ids.add(id);
+      this.anchor = i;
+    }
+    this.selIds = ids;
+    return true;
+  }
+
+  /** Open the song menu: for the whole selection when the song is part of it. */
+  openTrackMenu(e: MouseEvent, list: TrackRow[], i: number) {
+    e.preventDefault();
+    e.stopPropagation();
+    const t = list[i];
+    if (list === this.selScope && this.selIds.has(t.id) && this.selIds.size > 1) {
+      this.trackMenu = { x: e.clientX, y: e.clientY, tracks: this.selected };
+    } else {
+      this.trackMenu = { x: e.clientX, y: e.clientY, tracks: [t] };
+    }
+  }
+
   private version = -1;
   private palettes = new Map<string, Promise<Palette | null>>();
 

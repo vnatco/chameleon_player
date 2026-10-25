@@ -22,11 +22,18 @@
   import DefaultPrompt from "$lib/ui/DefaultPrompt.svelte";
 
   const MORPH_MS = 460;
+  const LIB_ZONES = [
+    ["Play Now", "Replaces the Queue"],
+    ["Add to Queue", "Skips Songs Already Queued"],
+    ["Add to Library", "Folders are watched for new files."],
+  ] as const;
   const IMAGE_EXT = /\.(jpe?g|png|webp|bmp|gif)$/i;
   const AUDIO_EXT = /\.(mp3|m4a|m4b|mp4|aac|flac|ogg|oga|wav|aiff?|aifc)$/i;
 
   let pointerInside = $state(true);
   let drop = $state<DropState>(null);
+  /** Drop zone under the pointer while files are dragged over the library. */
+  let libDrop = $state<number | null>(null);
   let libFrame = $state({ w: LIB_DEFAULT.w, h: LIB_DEFAULT.h });
   let mica = $state(false);
   /** Morph phase: "start" = old geometry, no transition; "run" = animating to the new one. */
@@ -50,7 +57,10 @@
   const S = $derived(SIZES[app.ui.size]);
   const off = $derived((PLAYER_WIN - S) / 2);
   const playerRect = $derived<Rect>({ x: off, y: off, w: S, h: S });
-  const showLibrary = $derived(app.mode === "library" && morph?.dir !== "collapse");
+  // The library stays mounted while it collapses and fades out as the frame
+  // closes around the cover, instead of vanishing in the first frame.
+  const showLibrary = $derived(app.mode === "library");
+  const closing = $derived(morph?.dir === "collapse");
 
 
   // ---- Sleeve geometry ------------------------------------------------------
@@ -66,6 +76,24 @@
       transition = morph.phase === "run" && app.anim ? `transform ${MORPH_MS}ms var(--ease-out)` : "none";
     }
     return `left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px;transform:${transform};transition:${transition}`;
+  });
+
+  // The morph scales the sleeve with a transform, which would scale its glow
+  // too. In the first frame the glow is drawn so that, scaled, it looks
+  // exactly as before; from there it eases to its new look with the morph.
+  // The player's glow also fades out before the window edge (`edge`, in the
+  // sleeve's own units, so it scales along with it).
+  const sleeveGlow = $derived.by((): { as: "player" | "library" | null; scale: number; instant: boolean; edge: number | null } => {
+    if (!morph) return { as: null, scale: 1, instant: false, edge: app.mode === "player" ? off : null };
+    const k = RAIL_COVER.s / S;
+    if (morph.phase === "start") {
+      return morph.dir === "expand"
+        ? { as: "player", scale: k, instant: true, edge: off * k }
+        : { as: "library", scale: 1 / k, instant: true, edge: null };
+    }
+    return morph.dir === "expand"
+      ? { as: "library", scale: 1, instant: false, edge: null }
+      : { as: "player", scale: 1, instant: false, edge: off };
   });
 
   // The library frame grows from the cover (expand) or shrinks into it
@@ -94,6 +122,29 @@
   });
 
   // ---- Expand / collapse -----------------------------------------------------
+  const frames = (n: number) =>
+    new Promise<void>((done) => {
+      const step = () => (--n <= 0 ? done() : requestAnimationFrame(step));
+      requestAnimationFrame(step);
+    });
+
+  /** Resolve once the page has the window's new size (or after a short wait,
+   * so a missed resize event can't hang the morph). */
+  function viewport(w: number, h: number) {
+    return new Promise<void>((done) => {
+      const fits = () => Math.abs(window.innerWidth - w) <= 1 && Math.abs(window.innerHeight - h) <= 1;
+      if (fits()) return done();
+      const finish = () => {
+        clearTimeout(timer);
+        window.removeEventListener("resize", check);
+        done();
+      };
+      const check = () => fits() && finish();
+      const timer = setTimeout(finish, 300);
+      window.addEventListener("resize", check);
+    });
+  }
+
   async function expand() {
     if (app.mode === "library" || morph) return;
     if (app.flipped) {
@@ -105,16 +156,29 @@
     const saved = app.ui.remember ? app.ui.libFrame : undefined;
     const w = Math.min(saved?.w ?? LIB_DEFAULT.w, f.work.w);
     const h = Math.min(saved?.h ?? LIB_DEFAULT.h, f.work.h);
-    // Keep the top-left, nudged onto the screen if needed.
+    // The library keeps the player's top-left, nudged onto the screen if needed.
     const x = Math.max(f.work.x, Math.min(f.x, f.work.x + f.work.w - w));
     const y = Math.max(f.work.y, Math.min(f.y, f.work.y + f.work.h - h));
     libFrame = { w, h };
-    morph = { dir: "expand", phase: "start", from: { x: playerRect.x + f.x - x, y: playerRect.y + f.y - y, w: S, h: S } };
+    morph = { dir: "expand", phase: "start", from: playerRect };
     app.mode = "library";
     app.applyPalette();
     await tick();
-    await app.guard(api.windowSetFrame({ x, y, w, h }));
-    requestAnimationFrame(() => requestAnimationFrame(() => morph && (morph = { ...morph, phase: "run" })));
+    // Grow in place first. Moving the window's origin while the content
+    // shifts back the other way can't happen in one frame: for a frame or
+    // two the screen shows the moved window with the old content, and the
+    // cover flicks sideways. A nudge onto the screen glides the whole window
+    // instead, together with its content, while the morph runs.
+    await app.guard(api.windowSetFrame({ x: f.x, y: f.y, w, h }));
+    await viewport(w, h);
+    // Start only once a frame at the new size is on screen.
+    await frames(2);
+    if (!morph) return;
+    morph = { ...morph, phase: "run" };
+    if (x !== f.x || y !== f.y) {
+      if (app.anim) app.guard(api.windowGlide(x, y, MORPH_MS));
+      else app.guard(api.windowSetFrame({ x, y, w, h }));
+    }
     setTimeout(
       async () => {
         morph = null;
@@ -138,13 +202,18 @@
     if (!f) return;
     if (f.maximized) f = (await app.guard(api.windowToggleMaximize())) ?? f;
     else if (app.ui.remember) app.setUi("libFrame", { x: f.x, y: f.y, w: f.w, h: f.h });
+    // Paint the opaque background before Mica goes, or for a frame or two the
+    // see-through Mica tint has nothing behind it but the desktop.
     mica = false;
+    await tick();
+    await frames(2);
     await app.guard(api.windowChrome(false, false));
     libFrame = { w: f.w, h: f.h };
     morph = { dir: "collapse", phase: "start", from: playerRect };
     app.applyPalette();
     await tick();
-    requestAnimationFrame(() => requestAnimationFrame(() => morph && (morph = { ...morph, phase: "run" })));
+    await frames(2);
+    if (morph) morph = { ...morph, phase: "run" };
     setTimeout(
       async () => {
         await app.guard(api.windowSetFrame({ x: f!.x, y: f!.y, w: PLAYER_WIN, h: PLAYER_WIN }));
@@ -169,6 +238,8 @@
   // ---- Right-click menu ------------------------------------------------------
   let menuBounds = $state({ x0: 0, y0: 0, x1: 860, y1: 860 });
   async function onContextMenu(e: MouseEvent) {
+    // A song row opened its own menu.
+    if (e.defaultPrevented) return;
     const t = e.target as HTMLElement;
     // Text fields keep the system menu (cut, copy, paste).
     if (t.closest("input, textarea, [contenteditable]")) return;
@@ -227,6 +298,37 @@
       { kind: "item", label: "Minimize", action: () => win.minimize() },
       { kind: "item", label: "Close", action: () => win.close() },
     );
+    return items;
+  });
+
+  // ---- Song menu (library rows) ---------------------------------------------
+  const trackMenuItems = $derived.by((): MenuItem[] => {
+    const tm = lib.trackMenu;
+    if (!tm) return [];
+    const tracks = tm.tracks;
+    const one = tracks.length === 1 ? tracks[0] : null;
+    const done = () => lib.clearSelection();
+    const items: MenuItem[] = [
+      { kind: "item", label: one ? "Play" : `Play ${tracks.length} Songs`, action: () => (one ? app.playOne(one) : app.playList(tracks, 0), done()) },
+      { kind: "item", label: "Play Next", action: () => (app.enqueue(tracks, true), done()) },
+      { kind: "item", label: "Add to Queue", action: () => (app.enqueue(tracks, false), done()) },
+    ];
+    if (one?.albumKey && !(app.libView === "album" && app.albumKey === one.albumKey)) {
+      const key = one.albumKey;
+      items.push(
+        { kind: "sep" },
+        {
+          kind: "item",
+          label: "Go to Album",
+          action: () => {
+            done();
+            app.libView = "album";
+            app.albumKey = key;
+            lib.openAlbum(key);
+          },
+        },
+      );
+    }
     return items;
   });
 
@@ -300,6 +402,8 @@
         const el = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-album-key]");
         lib.dropTile = el?.dataset.albumKey ?? null;
       }
+      // An image goes on a missing-cover tile, never into the queue.
+      libDrop = single ? null : Math.min(2, Math.floor((x / window.innerWidth) * 3));
       return;
     }
     const r = playerRect;
@@ -308,11 +412,29 @@
       drop = null;
       return;
     }
-    drop = { kind: single ? "image" : "files", zone: app.ui.size === "mini" ? 0 : y < r.y + r.h / 2 ? 0 : 1 };
+    // Mini has one zone (Play); the others three: Play Now, Add to Queue, Add to Library.
+    drop = { kind: single ? "image" : "files", zone: app.ui.size === "mini" ? 0 : Math.min(2, Math.floor(((y - r.y) / r.h) * 3)) };
   }
 
-  async function addToLibrary(folders: string[]) {
-    for (const f of folders) {
+  /** The library folder that already holds `path`, if any. */
+  function libraryFolderOf(path: string) {
+    const norm = (p: string) => p.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
+    const p = norm(path);
+    return app.folders.find((f) => {
+      const root = norm(f.path);
+      return p === root || p.startsWith(root + "\\");
+    });
+  }
+
+  /** Watch dropped folders (or the folders of dropped songs). Ones the library
+   * already covers are fine, not an error: their songs are already in it. */
+  async function addToLibrary(folders: string[], fromSongs = false) {
+    const fresh = folders.filter((f) => !libraryFolderOf(f));
+    if (!fresh.length) {
+      app.notify(fromSongs ? "These Songs Are Already in Your Library" : "Already in Your Library");
+      return;
+    }
+    for (const f of fresh) {
       const added = await app.guard(api.addFolder(f));
       if (added) {
         app.scanning = true;
@@ -358,14 +480,15 @@
 
     if (app.mode === "library") {
       const key = lib.dropTile;
+      const zone = libDrop;
       lib.dropTile = null;
+      libDrop = null;
       if (single && key) {
         const a = lib.missingAlbums.find((m) => m.key === key);
         if (a) lib.assign(a, paths[0]);
         return;
       }
-      if (folders.length) addToLibrary(folders);
-      if (audio.length) app.guard(api.openPaths(audio));
+      if (zone != null) dropFiles(zone, folders, audio);
       return;
     }
     if (app.flipped) {
@@ -374,15 +497,25 @@
     }
     if (!z) return;
     if (z.kind === "image") return setCoverFromImage(paths[0]);
-    // Folders always go to the library.
-    if (folders.length) addToLibrary(folders);
-    if (!audio.length) return;
-    if (z.zone === 0) {
-      const n = await app.guard(api.openPaths(audio));
-      if (n) app.notify(`Playing ${n} ${n === 1 ? "File" : "Files"}`);
+    dropFiles(z.zone, folders, audio);
+  }
+
+  /** Dropped songs and folders, by zone: 0 Play Now (replaces the queue),
+   * 1 Add to Queue (skips songs already queued), 2 Add to Library. */
+  async function dropFiles(zone: number, folders: string[], audio: string[]) {
+    const media = [...folders, ...audio];
+    if (!media.length) {
+      app.notify("These Files Can't Be Played", true);
+      return;
+    }
+    if (zone === 0) {
+      const n = await app.guard(api.openPaths(media));
+      if (n) app.notify(`Playing ${n} ${n === 1 ? "Song" : "Songs"}`);
+    } else if (zone === 1) {
+      await app.enqueuePaths(media, false);
     } else {
-      const dirs = [...new Set(audio.map((p) => p.replace(/[\\/][^\\/]+$/, "")))];
-      addToLibrary(dirs);
+      if (folders.length) await addToLibrary(folders);
+      if (audio.length) await addToLibrary([...new Set(audio.map((p) => p.replace(/[\\/][^\\/]+$/, "")))], true);
     }
   }
 
@@ -443,6 +576,7 @@
         else if (p.type === "drop") onDrop(p.paths, p.position.x / dpr, p.position.y / dpr);
         else {
           drop = null;
+          libDrop = null;
           lib.dropTile = null;
         }
       }),
@@ -549,7 +683,7 @@
 
 <div class="stage" class:ready={app.ready}>
   {#if app.mode === "library" || morph}
-    <div class="frame" class:mica class:round={app.mode === "library" && !morph} style={frameStyle}>
+    <div class="frame" class:mica class:closing class:round={app.mode === "library" && !morph} style={frameStyle}>
       {#if showLibrary}
         <Library bind:this={library} oncollapse={collapse} onedit={editFromLibrary} />
       {/if}
@@ -557,7 +691,14 @@
   {/if}
 
   <div class="sleeve-pos" style={sleeveStyle}>
-    <Sleeve inLibrary={app.mode === "library" && morph?.dir !== "collapse"} {drop} {pointerInside} onlibrary={expand} />
+    <Sleeve inLibrary={app.mode === "library" && morph?.dir !== "collapse"} {drop}
+      {pointerInside}
+      onlibrary={expand}
+      glowAs={sleeveGlow.as}
+      glowScale={sleeveGlow.scale}
+      glowInstant={sleeveGlow.instant}
+      glowEdge={sleeveGlow.edge}
+    />
   </div>
 
 
@@ -570,6 +711,29 @@
     >
       <DefaultPrompt />
     </div>
+  {/if}
+
+  {#if libDrop != null && app.mode === "library" && !morph}
+    <div class="libdrop">
+      {#each LIB_ZONES as [label, sub], i (label)}
+        <div class="lzone" class:hot={libDrop === i}>
+          <span class="lzi"><Icon name="drop" /></span>
+          <span class="lzl">{label}</span>
+          <span class="lzs">{sub}</span>
+        </div>
+      {/each}
+    </div>
+  {/if}
+
+  {#if lib.trackMenu}
+    <ContextMenu
+      x={lib.trackMenu.x}
+      y={lib.trackMenu.y}
+      items={trackMenuItems}
+      bounds={{ x0: 0, y0: 0, x1: window.innerWidth, y1: window.innerHeight }}
+      onclose={() => (lib.trackMenu = null)}
+      onrect={() => {}}
+    />
   {/if}
 
   {#if menu}
@@ -593,6 +757,7 @@
         class:err={app.toast.error}
         role="status"
         style:bottom={app.mode === "library" ? "24px" : `${PLAYER_WIN - (off + S) + 14}px`}
+        style:max-width={app.mode === "library" ? null : `${Math.max(S - 24, 136)}px`}
       >
         {#if app.toast.error}<span class="dot"></span>{:else}<span class="ok"><Icon name="check" size={14} stroke={2.4} /></span>{/if}
         <span>{app.toast.text}</span>
@@ -627,6 +792,17 @@
     background: var(--ch-mica);
     transition: background-color 0.2s;
   }
+  .frame.closing {
+    pointer-events: none;
+  }
+  .frame.closing > :global(.lib) {
+    animation: libOut 0.22s var(--ease-out) both;
+  }
+  @keyframes libOut {
+    to {
+      opacity: 0;
+    }
+  }
   .sleeve-pos {
     position: absolute;
     transform-origin: 0 0;
@@ -635,6 +811,50 @@
   .prompt {
     position: absolute;
     z-index: 8;
+  }
+  .libdrop {
+    position: absolute;
+    inset: 0;
+    z-index: 9;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    padding: 56px 20px 20px;
+    border-radius: 8px;
+    background: var(--ch-scrim);
+    animation: chFade 0.14s ease-out both;
+    pointer-events: none;
+  }
+  .lzone {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    border: 1.5px dashed var(--ch-text-subtle);
+    border-radius: 4px;
+    text-align: center;
+    padding: 12px;
+    color: var(--ch-text);
+    transition:
+      background-color 0.12s,
+      border-color 0.12s;
+  }
+  .lzone.hot {
+    border-color: var(--ch-accent);
+    background: var(--ch-accent-soft);
+  }
+  .lzi {
+    width: 28px;
+    height: 28px;
+  }
+  .lzl {
+    font-size: 18px;
+    font-weight: 600;
+  }
+  .lzs {
+    font-size: 13px;
+    color: var(--ch-text-subtle);
   }
   .toast {
     position: absolute;

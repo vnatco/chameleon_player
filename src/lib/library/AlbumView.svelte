@@ -49,6 +49,7 @@
         <div class="actions">
           <button class="btn primary" onclick={() => app.playList(a.tracks, 0)}><Icon name="play" size={14} />Play</button>
           <button class="btn secondary" onclick={shuffle}>Shuffle</button>
+          <button class="ib ghostb" onclick={() => app.enqueue(a.tracks, false)} aria-label="Add to Queue" title="Add to Queue"><Icon name="add" /></button>
           <button class="ib ghostb" onclick={onedit} aria-label="Edit Album Tags" title="Edit Tags"><Icon name="edit" /></button>
         </div>
       </div>
@@ -56,7 +57,13 @@
     <div class="tracks">
       {#each a.tracks as t, i (t.id)}
         {@const on = t.path === app.status?.track?.path}
-        <button class="tr" class:on onclick={() => app.playList(a.tracks, i)}>
+        <button
+          class="tr"
+          class:on
+          class:sel={lib.selIds.has(t.id)}
+          onclick={(e) => lib.select(e, a.tracks, i) || app.playList(a.tracks, i)}
+          oncontextmenu={(e) => lib.openTrackMenu(e, a.tracks, i)}
+        >
           <span class="n">{on ? "▶" : (t.trackNo ?? i + 1)}</span>
           <span class="tt ellipsis">{t.title}</span>
           <span class="d">{formatTime(t.duration)}</span>
@@ -186,6 +193,10 @@
   }
   .tr:hover {
     background: var(--ch-hover);
+  }
+  .tr.sel {
+    background: var(--ch-hover);
+    box-shadow: inset 3px 0 0 var(--ch-accent);
   }
   .tr.on {
     background: var(--ch-accent-soft);

@@ -169,9 +169,13 @@ fn frame(window: &WebviewWindow) -> Res<Frame> {
     })
 }
 
+/// Bumped by every move, so a newer move or glide cancels a running glide.
+static MOVE_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Move and resize in one step (logical screen px).
 #[tauri::command]
 pub fn window_set_frame(window: WebviewWindow, x: f64, y: f64, w: f64, h: f64) -> Res<Frame> {
+    MOVE_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
     #[cfg(windows)]
     {
@@ -187,6 +191,84 @@ pub fn window_set_frame(window: WebviewWindow, x: f64, y: f64, w: f64, h: f64) -
         window.set_size(tauri::LogicalSize::new(w, h)).map_err(|e| e.to_string())?;
     }
     frame(&window)
+}
+
+/// Slide the window (size unchanged) to `x`, `y` (logical screen px) over
+/// `ms`, one step per DWM frame, eased like the UI's `--ease-out`.
+///
+/// Moving the window together with its content never shows a stale frame,
+/// unlike moving it while the content shifts the other way in the same step:
+/// the screen briefly shows the moved window with the old content (the cover
+/// flicks sideways). The library morph uses this to bring a library that
+/// opened past the screen edge back onto the screen.
+#[tauri::command]
+pub fn window_glide(window: WebviewWindow, x: f64, y: f64, ms: u64) -> Res<()> {
+    use std::sync::atomic::Ordering;
+    let gen = MOVE_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let from = window.outer_position().map_err(|e| e.to_string())?;
+    let (x0, y0) = (from.x as f64, from.y as f64);
+    let (x1, y1) = (x * scale, y * scale);
+    #[cfg(windows)]
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as isize;
+    std::thread::Builder::new()
+        .name("window-glide".into())
+        .spawn(move || {
+            let start = std::time::Instant::now();
+            let total = ms.max(1) as f64;
+            loop {
+                if MOVE_GEN.load(Ordering::SeqCst) != gen {
+                    return;
+                }
+                let t = (start.elapsed().as_secs_f64() * 1000.0 / total).min(1.0);
+                let e = ease_out(t);
+                let (px, py) = ((x0 + (x1 - x0) * e).round() as i32, (y0 + (y1 - y0) * e).round() as i32);
+                #[cfg(windows)]
+                {
+                    use windows::Win32::Foundation::HWND;
+                    use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER};
+                    // Async: never block on the UI thread, which is busy with the morph.
+                    if let Err(e) = unsafe { SetWindowPos(HWND(hwnd as _), None, px, py, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS) } {
+                        log::warn!("window glide step failed: {e}");
+                        return;
+                    }
+                }
+                #[cfg(not(windows))]
+                let _ = (px, py);
+                if t >= 1.0 {
+                    return;
+                }
+                wait_frame();
+            }
+        })
+        .map_err(|e| format!("Can't move window: {e}"))?;
+    Ok(())
+}
+
+/// Block until the next DWM composition (one display frame).
+fn wait_frame() {
+    #[cfg(windows)]
+    if unsafe { windows::Win32::Graphics::Dwm::DwmFlush() }.is_ok() {
+        return;
+    }
+    std::thread::sleep(Duration::from_millis(8));
+}
+
+/// cubic-bezier(0.2, 0.8, 0.2, 1), the UI's `--ease-out`.
+fn ease_out(t: f64) -> f64 {
+    let (x1, y1, x2, y2) = (0.2, 0.8, 0.2, 1.0);
+    let bez = |a: f64, b: f64, s: f64| 3.0 * a * s * (1.0 - s).powi(2) + 3.0 * b * s * s * (1.0 - s) + s.powi(3);
+    // Solve x(s) = t by bisection; x is monotonic for these control points.
+    let (mut lo, mut hi) = (0.0, 1.0);
+    for _ in 0..40 {
+        let mid = (lo + hi) / 2.0;
+        if bez(x1, x2, mid) < t {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    bez(y1, y2, (lo + hi) / 2.0)
 }
 
 /// Switch between the square player (transparent, square corners, fixed
@@ -234,4 +316,23 @@ pub fn window_show(app: AppHandle) -> Res<()> {
     let w = app.get_webview_window("main").ok_or("No main window")?;
     w.show().map_err(|e| e.to_string())?;
     w.set_focus().map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ease_out;
+
+    #[test]
+    fn ease_out_matches_the_css_curve() {
+        assert!(ease_out(0.0).abs() < 1e-6);
+        assert!((ease_out(1.0) - 1.0).abs() < 1e-6);
+        // Rises steeply, then settles: well past halfway at a quarter of the time.
+        assert!(ease_out(0.25) > 0.6);
+        let mut last = 0.0;
+        for i in 1..=100 {
+            let v = ease_out(i as f64 / 100.0);
+            assert!(v >= last, "not monotonic at {i}");
+            last = v;
+        }
+    }
 }

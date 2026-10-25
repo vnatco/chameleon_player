@@ -36,9 +36,15 @@
   <p class="subtle pad">No Songs Yet.</p>
 {:else}
   <VirtualGrid {items} {scroller} rowHeight={44} key={(t) => t.id}>
-    {#snippet item(t)}
+    {#snippet item(t, i)}
       {@const on = t.path === playing}
-      <button class="row" class:on onclick={() => app.playOne(t)}>
+      <button
+        class="row"
+        class:on
+        class:sel={lib.selIds.has(t.id)}
+        onclick={(e) => lib.select(e, items, i) || app.playOne(t)}
+        oncontextmenu={(e) => lib.openTrackMenu(e, items, i)}
+      >
         <span class="thumb" style:box-shadow={t.cover ? `0 0 0 1px ${t.cover.edge}e6, 0 2px 10px -2px ${t.cover.glow}b3` : "0 0 0 1px var(--ch-hairline)"}>
           {#if t.cover}<img src={coverUrl(t.cover.thumb)} alt="" loading="lazy" decoding="async" />{:else}{mono(t.album || t.title)}{/if}
         </span>
@@ -88,6 +94,10 @@
   }
   .row.on .title {
     color: var(--ch-accent);
+  }
+  .row.sel {
+    background: var(--ch-hover);
+    box-shadow: inset 3px 0 0 var(--ch-accent);
   }
   .thumb {
     width: 32px;

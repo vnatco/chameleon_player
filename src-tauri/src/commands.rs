@@ -409,6 +409,8 @@ pub enum PlayerCommand {
     Prev,
     Stop,
     PlayIndex { index: usize },
+    Remove { indices: Vec<usize> },
+    Move { from: usize, to: usize },
     Seek { position: f64 },
     SetVolume { volume: f32 },
     SetRepeat { repeat: Repeat },
@@ -430,6 +432,8 @@ pub fn player(state: State<'_, AppState>, command: PlayerCommand) -> Res<()> {
         PlayerCommand::Prev => Command::Prev,
         PlayerCommand::Stop => Command::Stop,
         PlayerCommand::PlayIndex { index } => Command::PlayIndex(index),
+        PlayerCommand::Remove { indices } => Command::Remove(indices),
+        PlayerCommand::Move { from, to } => Command::Move { from, to },
         PlayerCommand::Seek { position } => Command::Seek(position),
         PlayerCommand::SetVolume { volume } => {
             let volume = volume.clamp(0.0, 1.0);
@@ -456,6 +460,55 @@ pub fn player_status(state: State<'_, AppState>) -> audio::Status {
 #[tauri::command]
 pub fn player_insert(state: State<'_, AppState>, tracks: Vec<Track>, at: usize, play: bool) {
     state.audio.send(Command::Insert { tracks, at, play });
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Enqueued {
+    pub added: usize,
+    /// Songs left out because they were already in the queue.
+    pub skipped: usize,
+}
+
+/// Add tracks to the queue, right after the current track (`next`) or at the
+/// end. Songs already in the queue are skipped. Starts playing if the queue
+/// was empty.
+#[tauri::command]
+pub fn player_enqueue(state: State<'_, AppState>, tracks: Vec<Track>, next: bool) -> Enqueued {
+    enqueue(&state.audio, tracks, next)
+}
+
+/// Like `player_enqueue`, for dropped files and folders (folders are expanded
+/// to their playable files, sorted by path).
+#[tauri::command]
+pub fn player_enqueue_paths(state: State<'_, AppState>, paths: Vec<PathBuf>, next: bool) -> Res<Enqueued> {
+    let tracks = tracks_for_paths(&state.library, &paths);
+    if tracks.is_empty() {
+        return Err("None of these files can be played".into());
+    }
+    Ok(enqueue(&state.audio, tracks, next))
+}
+
+fn enqueue(audio: &AudioHandle, tracks: Vec<Track>, next: bool) -> Enqueued {
+    let queued = audio.queue();
+    let (tracks, skipped) = new_to_queue(&queued, tracks);
+    let added = tracks.len();
+    if added > 0 {
+        let at = if next { audio.status().index.map_or(0, |i| i + 1) } else { queued.len() };
+        audio.send(Command::Insert { tracks, at, play: queued.is_empty() });
+    }
+    Enqueued { added, skipped }
+}
+
+/// The tracks not yet in `queued` (and not repeated within `tracks`), plus how
+/// many were left out. Paths compare without case, as Windows does.
+fn new_to_queue(queued: &[Track], tracks: Vec<Track>) -> (Vec<Track>, usize) {
+    let key = |t: &Track| t.path.to_string_lossy().to_lowercase();
+    let mut seen: std::collections::HashSet<String> = queued.iter().map(key).collect();
+    let total = tracks.len();
+    let fresh: Vec<Track> = tracks.into_iter().filter(|t| seen.insert(key(t))).collect();
+    let skipped = total - fresh.len();
+    (fresh, skipped)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -610,4 +663,37 @@ fn update_settings(state: &AppState, f: impl FnOnce(&mut Settings)) -> Res<()> {
     let mut s = state.settings.lock();
     f(&mut s);
     state.settings_store.save(&s).map_err(|e| format!("Can't save settings: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn t(p: &str) -> Track {
+        Track { id: None, path: PathBuf::from(p), duration: None }
+    }
+
+    #[test]
+    fn enqueue_skips_songs_already_queued() {
+        let queued = vec![t(r"C:\Music\a.mp3"), t(r"C:\Music\b.mp3")];
+        let (fresh, skipped) = new_to_queue(&queued, vec![t(r"C:\Music\A.MP3"), t(r"C:\Music\c.mp3"), t(r"C:\Music\b.mp3")]);
+        assert_eq!(fresh.iter().map(|t| t.path.to_string_lossy().into_owned()).collect::<Vec<_>>(), vec![r"C:\Music\c.mp3"]);
+        assert_eq!(skipped, 2);
+    }
+
+    #[test]
+    fn enqueue_drops_repeats_within_one_batch() {
+        let (fresh, skipped) = new_to_queue(&[], vec![t(r"C:\x.flac"), t(r"C:\y.flac"), t(r"C:\x.flac")]);
+        assert_eq!(fresh.len(), 2);
+        assert_eq!(skipped, 1);
+    }
+
+    #[test]
+    fn enqueue_the_same_songs_twice_adds_nothing() {
+        let five: Vec<Track> = (0..5).map(|i| t(&format!(r"C:\Music\{i}.mp3"))).collect();
+        let (first, _) = new_to_queue(&[], five.clone());
+        let (again, skipped) = new_to_queue(&first, five);
+        assert!(again.is_empty());
+        assert_eq!(skipped, 5);
+    }
 }

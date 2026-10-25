@@ -22,6 +22,10 @@
     drop: '<path d="M12 4v11"/><path d="M7 10l5 5 5-5"/><path d="M5 19h14"/>',
     repeat: '<path d="M17 3l3 3-3 3"/><path d="M4 11V9a3 3 0 013-3h13"/><path d="M7 21l-3-3 3-3"/><path d="M20 13v2a3 3 0 01-3 3H4"/>',
     shuffle: '<path d="M16 4h4v4"/><path d="M4 19L20 4"/><path d="M20 16v4h-4"/><path d="M14 14l6 6"/><path d="M4 5l5 5"/>',
+    queue: '<path d="M4 6h12"/><path d="M4 11h12"/><path d="M4 16h7"/><path d="M15 14.5v5l4.5-2.5z" fill="currentColor"/>',
+    playnext: '<path d="M4 6h9"/><path d="M4 11h9"/><path d="M4 16h9"/><path d="M16.5 5.5l3.5 3-3.5 3"/><path d="M20 8.5h-4"/>',
+    add: '<path d="M12 5v14M5 12h14"/>',
+    grip: '<circle cx="9" cy="6.5" r="1.3" fill="currentColor" stroke="none"/><circle cx="15" cy="6.5" r="1.3" fill="currentColor" stroke="none"/><circle cx="9" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="9" cy="17.5" r="1.3" fill="currentColor" stroke="none"/><circle cx="15" cy="17.5" r="1.3" fill="currentColor" stroke="none"/>',
   } as const;
   export type IconName = keyof typeof ICONS;
 </script>
