@@ -36,6 +36,10 @@ export const REACH: Record<Size, number> = { mini: 0.42, normal: 1, large: 0.9 }
  * logical px, so 860 is already close to the limit. */
 export const PLAYER_WIN = SIZES.large + 2 * MARGINS.large;
 export const LIB_DEFAULT = { w: 1200, h: 800 };
+/** Smallest believable saved library size: anything less is junk (a
+ * minimized window is 160 x 28), and the default is used instead. Snap
+ * layouts go down to a third of the screen, so this stays well below that. */
+export const LIB_MIN = { w: 400, h: 300 };
 /** Where the cover sits in the library rail. */
 export const RAIL_COVER = { x: 24, y: 56, s: 252 };
 
@@ -401,6 +405,16 @@ class AppState {
   /** Play a list (album, search results...) from `index`. */
   playList(list: TrackRow[], index: number) {
     this.guard(api.load(list.map(trackOf), index, true));
+  }
+
+  /** Play a list in random order (replaces the queue). */
+  playShuffled(list: TrackRow[]) {
+    const l = [...list];
+    for (let i = l.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [l[i], l[j]] = [l[j], l[i]];
+    }
+    this.playList(l, 0);
   }
 
   /** Play one song: jump to it if queued, else insert it after the current one. */

@@ -19,6 +19,10 @@
     }
   });
   const items = $derived(genre ? byGenre : lib.songs);
+  $effect(() => {
+    lib.listed = items;
+    return () => (lib.listed = null);
+  });
   const playing = $derived(app.status?.track?.path);
 </script>
 
@@ -47,6 +51,7 @@
       >
         <span class="thumb" style:box-shadow={t.cover ? `0 0 0 1px ${t.cover.edge}e6, 0 2px 10px -2px ${t.cover.glow}b3` : "0 0 0 1px var(--ch-hairline)"}>
           {#if t.cover}<img src={coverUrl(t.cover.thumb)} alt="" loading="lazy" decoding="async" />{:else}{mono(t.album || t.title)}{/if}
+          {#if lib.selIds.has(t.id)}<span class="chk"><Icon name="check" size={16} stroke={2.4} /></span>{/if}
         </span>
         <span class="ellipsis title">{t.title}</span>
         <span class="ellipsis subtle">{t.artist}</span>
@@ -89,17 +94,34 @@
   .row:hover {
     background: var(--ch-hover);
   }
+  /* Keyboard focus on a row: a quiet highlight, not the global outline. */
+  .row:focus-visible {
+    outline: none;
+    background: var(--ch-hover);
+  }
   .row.on {
     background: var(--ch-accent-soft);
   }
   .row.on .title {
     color: var(--ch-accent);
   }
+  /* Selected: a soft accent tint and a check over the artwork. */
   .row.sel {
-    background: var(--ch-hover);
-    box-shadow: inset 3px 0 0 var(--ch-accent);
+    background: color-mix(in srgb, var(--ch-accent) 16%, transparent);
+  }
+  .row.sel:hover {
+    background: color-mix(in srgb, var(--ch-accent) 22%, transparent);
+  }
+  .chk {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    background: color-mix(in srgb, var(--ch-accent) 82%, transparent);
+    color: var(--ch-on-accent);
   }
   .thumb {
+    position: relative;
     width: 32px;
     height: 32px;
     background: var(--ch-surface-2);

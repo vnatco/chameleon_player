@@ -267,6 +267,8 @@ export interface Frame extends Rect {
   scale: number;
   work: Rect;
   maximized: boolean;
+  /** Minimized windows sit at -32000, -32000; never save that rect. */
+  minimized: boolean;
 }
 
 export interface Enqueued {

@@ -9,11 +9,11 @@
   import { onMount, tick } from "svelte";
   import { availableMonitors } from "@tauri-apps/api/window";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
-  import { api, events, type Rect } from "$lib/api";
+  import { api, events, type Rect, type TrackRow } from "$lib/api";
   import { lib } from "$lib/library.svelte";
   import { PaletteDriver, prepare } from "$lib/palette";
   import { kick } from "$lib/progress";
-  import { app, LIB_DEFAULT, MARGINS, PLAYER_WIN, RAIL_COVER, SIZES, win } from "$lib/state.svelte";
+  import { app, LIB_DEFAULT, LIB_MIN, MARGINS, PLAYER_WIN, RAIL_COVER, SIZES, win } from "$lib/state.svelte";
   import Library from "$lib/library/Library.svelte";
   import Sleeve, { type DropState } from "$lib/sleeve/Sleeve.svelte";
   import Icon from "$lib/ui/Icon.svelte";
@@ -80,21 +80,31 @@
 
   // The morph scales the sleeve with a transform, which would scale its glow
   // too. In the first frame the glow is drawn so that, scaled, it looks
-  // exactly as before; from there it eases to its new look with the morph.
+  // exactly as before. While the sleeve moves, its shape stays frozen and it
+  // only fades out: changing its reach would re-blur large layers every frame,
+  // and when the GPU is busy (first library mount, playback) a frame goes out
+  // without the glow and it flickers. Once the sleeve has landed (`settling`),
+  // the glow takes its new shape while invisible, then fades back in.
   // The player's glow also fades out before the window edge (`edge`, in the
   // sleeve's own units, so it scales along with it).
-  const sleeveGlow = $derived.by((): { as: "player" | "library" | null; scale: number; instant: boolean; edge: number | null } => {
-    if (!morph) return { as: null, scale: 1, instant: false, edge: app.mode === "player" ? off : null };
+  let settling = $state(false);
+  const sleeveGlow = $derived.by((): { as: "player" | "library" | null; scale: number; instant: boolean; edge: number | null; hidden: boolean } => {
+    const edge = app.mode === "player" ? off : null;
+    if (!morph) return { as: null, scale: 1, instant: settling, edge, hidden: settling };
     const k = RAIL_COVER.s / S;
-    if (morph.phase === "start") {
-      return morph.dir === "expand"
-        ? { as: "player", scale: k, instant: true, edge: off * k }
-        : { as: "library", scale: 1 / k, instant: true, edge: null };
-    }
+    const run = morph.phase === "run";
     return morph.dir === "expand"
-      ? { as: "library", scale: 1, instant: false, edge: null }
-      : { as: "player", scale: 1, instant: false, edge: off };
+      ? { as: "player", scale: k, instant: !run, edge: off * k, hidden: run }
+      : { as: "library", scale: 1 / k, instant: !run, edge: null, hidden: run };
   });
+
+  /** End of a morph: the glow changes shape while hidden, then fades in. */
+  async function settle() {
+    settling = true;
+    await tick();
+    await frames(2);
+    settling = false;
+  }
 
   // The library frame grows from the cover (expand) or shrinks into it
   // (collapse) by animating a clip, so its content is never scaled or
@@ -153,7 +163,10 @@
     }
     const f = await app.guard(api.windowFrame());
     if (!f) return;
-    const saved = app.ui.remember ? app.ui.libFrame : undefined;
+    // A saved size below LIB_MIN is junk (e.g. the 160 x 28 of a minimized
+    // window, saved by 1.0.4 and earlier); use the default then.
+    const remembered = app.ui.remember ? app.ui.libFrame : undefined;
+    const saved = remembered && remembered.w >= LIB_MIN.w && remembered.h >= LIB_MIN.h ? remembered : undefined;
     const w = Math.min(saved?.w ?? LIB_DEFAULT.w, f.work.w);
     const h = Math.min(saved?.h ?? LIB_DEFAULT.h, f.work.h);
     // The library keeps the player's top-left, nudged onto the screen if needed.
@@ -182,6 +195,7 @@
     setTimeout(
       async () => {
         morph = null;
+        settle();
         try {
           await api.windowChrome(true, true);
           mica = true;
@@ -201,7 +215,7 @@
     let f = await app.guard(api.windowFrame());
     if (!f) return;
     if (f.maximized) f = (await app.guard(api.windowToggleMaximize())) ?? f;
-    else if (app.ui.remember) app.setUi("libFrame", { x: f.x, y: f.y, w: f.w, h: f.h });
+    else if (app.ui.remember && !f.minimized) app.setUi("libFrame", { x: f.x, y: f.y, w: f.w, h: f.h });
     // Paint the opaque background before Mica goes, or for a frame or two the
     // see-through Mica tint has nothing behind it but the desktop.
     mica = false;
@@ -219,6 +233,7 @@
         await app.guard(api.windowSetFrame({ x: f!.x, y: f!.y, w: PLAYER_WIN, h: PLAYER_WIN }));
         app.mode = "player";
         morph = null;
+        settle();
         app.applyPalette();
       },
       app.anim ? MORPH_MS + 20 : 0,
@@ -332,9 +347,40 @@
     return items;
   });
 
+  // ---- Album menu (album tiles, album search results) -------------------------
+  const albumMenuItems = $derived.by((): MenuItem[] => {
+    const m = lib.albumMenu;
+    if (!m) return [];
+    const a = m.album;
+    // The album's songs are loaded when an action is picked.
+    const withSongs = (run: (tracks: TrackRow[]) => void) => async () => {
+      const tracks = await lib.albumTracks(a.key);
+      if (tracks.length) run(tracks);
+      else app.notify(`${a.title} Has No Songs in Your Library`, true);
+    };
+    return [
+      { kind: "item", label: "Play", action: withSongs((t) => app.playList(t, 0)) },
+      { kind: "item", label: "Shuffle", action: withSongs((t) => app.playShuffled(t)) },
+      { kind: "item", label: "Play Next", action: withSongs((t) => app.enqueue(t, true)) },
+      { kind: "item", label: "Add to Queue", action: withSongs((t) => app.enqueue(t, false)) },
+      { kind: "sep" },
+      {
+        kind: "item",
+        label: "Open Album",
+        action: () => {
+          app.libView = "album";
+          app.albumKey = a.key;
+          lib.openAlbum(a.key);
+        },
+      },
+    ];
+  });
+
   // ---- Keyboard (spec H) ----------------------------------------------------
   function onKey(e: KeyboardEvent) {
     const t = e.target as HTMLElement;
+    // An open menu handles its own keys (arrows move through it).
+    if (t.closest("[role=menu]")) return;
     const typing = t.tagName === "INPUT" && (t as HTMLInputElement).type !== "range";
     if (e.key === "Escape") {
       if (library?.escape()) return;
@@ -344,6 +390,13 @@
       }
       if (app.flipped) return app.flip();
       if (app.mode === "library") return collapse();
+      return;
+    }
+    // Ctrl+A selects every song in the list on screen (Songs or an album).
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "a" && !typing && app.mode === "library" && lib.listed?.length) {
+      e.preventDefault();
+      lib.selectAll(lib.listed);
+      dropMouseFocus();
       return;
     }
     if (typing || e.ctrlKey || e.altKey || e.metaKey) return;
@@ -390,7 +443,18 @@
       case "3":
         if (app.mode === "player") app.setSize("large");
         break;
+      default:
+        return;
     }
+    dropMouseFocus();
+  }
+
+  /** After a shortcut, let go of the row or button the mouse last clicked:
+   * any key press makes Chromium show the keyboard focus ring on it.
+   * Text fields and sliders keep focus (they use the keys themselves). */
+  function dropMouseFocus() {
+    const a = document.activeElement as HTMLElement | null;
+    if (a && a !== document.body && !a.matches("input, textarea, [contenteditable], [role=slider]")) a.blur();
   }
 
   // ---- Drag & drop ------------------------------------------------------------
@@ -637,7 +701,7 @@
         moveTimer = setTimeout(async () => {
           if (!app.ui.remember || morph) return;
           const f = await api.windowFrame().catch(() => null);
-          if (!f) return;
+          if (!f || f.minimized) return;
           if (app.mode === "player") app.setUi("playerPos", { x: f.x, y: f.y });
           else if (!f.maximized) app.setUi("libFrame", { x: f.x, y: f.y, w: f.w, h: f.h });
         }, 400);
@@ -647,7 +711,8 @@
         if (focused) app.refreshDefaults();
       }),
       win.onResized(() => {
-        if (app.mode === "library" && !morph) libFrame = { w: window.innerWidth, h: window.innerHeight };
+        // Minimizing also resizes (to nothing); keep the real size.
+        if (app.mode === "library" && !morph && window.innerWidth >= LIB_MIN.w) libFrame = { w: window.innerWidth, h: window.innerHeight };
       }),
     );
 
@@ -698,6 +763,7 @@
       glowScale={sleeveGlow.scale}
       glowInstant={sleeveGlow.instant}
       glowEdge={sleeveGlow.edge}
+      glowHidden={sleeveGlow.hidden}
     />
   </div>
 
@@ -723,6 +789,17 @@
         </div>
       {/each}
     </div>
+  {/if}
+
+  {#if lib.albumMenu}
+    <ContextMenu
+      x={lib.albumMenu.x}
+      y={lib.albumMenu.y}
+      items={albumMenuItems}
+      bounds={{ x0: 0, y0: 0, x1: window.innerWidth, y1: window.innerHeight }}
+      onclose={() => (lib.albumMenu = null)}
+      onrect={() => {}}
+    />
   {/if}
 
   {#if lib.trackMenu}

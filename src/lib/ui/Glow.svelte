@@ -23,6 +23,7 @@
     anim = true,
     instant = false,
     edge = null,
+    hidden = false,
   }: {
     /** Glow reach R (intensity x size scale). */
     reach: number;
@@ -40,6 +41,8 @@
     /** Room (px) between the cover and the window edge; the glow fades out
      * before it, so a strong glow never ends in a hard cut. */
     edge?: number | null;
+    /** Fade the glow out (opacity only, so nothing is re-blurred). */
+    hidden?: boolean;
   } = $props();
 
   let pulseEl: HTMLDivElement | undefined = $state();
@@ -100,7 +103,7 @@
 </script>
 
 {#if reach > 0 && opacity > 0}
-  <div class="glow" class:instant class:edged={edge != null} style:opacity={outer} style:--R={reach} style:--edge={edge != null ? `${edge}px` : null}>
+  <div class="glow" class:instant class:edged={edge != null} class:hidden style:opacity={hidden ? 0 : outer} style:--R={reach} style:--edge={edge != null ? `${edge}px` : null}>
     <div class="area">
       <div class="breathe" class:on={breathing && anim}>
         <div class="dip" bind:this={dipEl}>
@@ -206,6 +209,9 @@
   .r {
     translate: var(--o) 0;
     background: linear-gradient(to bottom, var(--ch-glow-r-0), var(--ch-glow-r-1), var(--ch-glow-r-2));
+  }
+  .glow.hidden {
+    transition: opacity 0.16s;
   }
   .instant,
   .instant .set,

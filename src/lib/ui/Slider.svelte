@@ -162,6 +162,10 @@
     bottom: -6px;
     left: calc(50% - 6px);
   }
+  /* Keyboard focus shows on the knob, not as an outline round the bar. */
+  .slider:focus-visible {
+    outline: none;
+  }
   .slider:hover .knob span,
   .slider:focus-visible .knob span,
   .dragging .knob span {

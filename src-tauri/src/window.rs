@@ -135,6 +135,9 @@ pub struct Frame {
     /// Work area (screen minus taskbar) of the monitor the window is on.
     pub work: Rect,
     pub maximized: bool,
+    /// Minimized windows are parked at -32000, -32000 at 160 x 28; that rect
+    /// must never be saved as the window's place.
+    pub minimized: bool,
 }
 
 #[tauri::command]
@@ -166,6 +169,7 @@ fn frame(window: &WebviewWindow) -> Res<Frame> {
         scale,
         work,
         maximized: window.is_maximized().unwrap_or(false),
+        minimized: window.is_minimized().unwrap_or(false),
     })
 }
 

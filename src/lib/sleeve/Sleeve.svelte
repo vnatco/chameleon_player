@@ -23,6 +23,7 @@
     glowScale = 1,
     glowInstant = false,
     glowEdge = null,
+    glowHidden = false,
   }: {
     inLibrary?: boolean;
     drop?: DropState;
@@ -36,6 +37,8 @@
     glowInstant?: boolean;
     /** Room (px, in the sleeve's own units) between the cover and the window edge. */
     glowEdge?: number | null;
+    /** Fade the glow out while the morph moves the sleeve. */
+    glowHidden?: boolean;
   } = $props();
 
   // ---- Hover & idle (controls hide after 2.6 s without movement) ----------
@@ -186,7 +189,7 @@
   }}
   onfocusout={() => (focusIn = false)}
 >
-  <Glow reach={glowReach} opacity={glowOpacity} breathing={pausedLook && !app.loading} pulse={app.ui.pulse && app.playing} level={() => app.level} {dip} anim={app.anim} instant={glowInstant} edge={glowEdge} />
+  <Glow reach={glowReach} opacity={glowOpacity} breathing={pausedLook && !app.loading} pulse={app.ui.pulse && app.playing} level={() => app.level} {dip} anim={app.anim} instant={glowInstant} edge={glowEdge} hidden={glowHidden} />
 
   <div class="persp">
     <div class="flipper" class:flipped class:still={!app.anim} class:instant>

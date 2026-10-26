@@ -25,11 +25,11 @@
   let genreFilter = $state<string | null>(null);
 
   const tabs: [LibView, string][] = [
+    ["queue", "Queue"],
     ["albums", "Albums"],
     ["artists", "Artists"],
     ["songs", "Songs"],
     ["genres", "Genres"],
-    ["queue", "Queue"],
     ["missing", "Missing Covers"],
     ["settings", "Settings"],
   ];
@@ -124,6 +124,18 @@
     await app.guard(api.windowSetFrame({ x: w.x + z[0] * w.w, y: w.y + z[1] * w.h, w: z[2] * w.w, h: z[3] * w.h }));
   }
 
+  // ---- Close: exits the app (Collapse, top left, goes back to the player) ---
+  async function quit() {
+    // The library's size is otherwise only saved on collapse; keep it, and
+    // write it now, since the window is about to go.
+    const f = await api.windowFrame().catch((e) => (console.warn("window frame failed", e), null));
+    if (f && app.ui.remember && !f.maximized && !f.minimized) {
+      app.ui.libFrame = { x: f.x, y: f.y, w: f.w, h: f.h };
+      await api.setUiSettings($state.snapshot(app.ui) as Record<string, unknown>).catch((e) => console.warn("saving settings failed", e));
+    }
+    await app.guard(win.close());
+  }
+
   // ---- Title bar drag ------------------------------------------------------
   function barDown(e: MouseEvent) {
     if (e.button !== 0 || (e.target as HTMLElement).closest("button, input, .results, .snap")) return;
@@ -196,7 +208,7 @@
           {#if results.albums.length}
             <div class="eyebrow g">Albums</div>
             {#each results.albums as a (a.key)}
-              <button class="res" onmousedown={(e) => e.preventDefault()} onclick={() => openAlbum(a.key)}>
+              <button class="res" onmousedown={(e) => e.preventDefault()} onclick={() => openAlbum(a.key)} oncontextmenu={(e) => lib.openAlbumMenu(e, a)}>
                 <span class="rt">{#if a.cover}<img src={coverUrl(a.cover.thumb)} alt="" />{:else}{mono(a.title)}{/if}</span>
                 <span class="rw"><span class="ellipsis">{a.title}</span><span class="ellipsis subtle">Album · {a.artist}</span></span>
               </button>
@@ -249,7 +261,7 @@
           </div>
         {/if}
       </div>
-      <button class="cap close" onclick={oncollapse} aria-label="Close Library"><Icon name="close" size={14} /></button>
+      <button class="cap close" onclick={quit} aria-label="Close" title="Close Chameleon"><Icon name="close" size={14} /></button>
     </div>
   </div>
 
@@ -668,12 +680,17 @@
     height: 28px;
     padding: 8px;
   }
+  /* The list clips its overflow (it fills the rail's leftover height), so it
+     reaches past the rail sideways and vertically to leave room for the
+     thumbnails' glow. */
   .next {
     display: flex;
     flex-direction: column;
     gap: 2px;
     min-height: 0;
     overflow: hidden;
+    margin: -8px -16px 0;
+    padding: 8px 16px;
   }
   .nrow {
     display: flex;
@@ -689,6 +706,11 @@
     color: var(--ch-text);
   }
   .nrow:hover {
+    background: var(--ch-hover);
+  }
+  /* Keyboard focus on a row: a quiet highlight, not the global outline. */
+  .nrow, .res:focus-visible {
+    outline: none;
     background: var(--ch-hover);
   }
   .nt {

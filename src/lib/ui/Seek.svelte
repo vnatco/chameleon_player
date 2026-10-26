@@ -156,5 +156,13 @@
     height: 12px;
     border-radius: 6px;
     background: var(--ch-accent);
+    transition: transform 0.12s;
+  }
+  /* Keyboard focus shows on the knob, not as an outline round the bar. */
+  .seek:focus-visible {
+    outline: none;
+  }
+  .seek:focus-visible .knob span {
+    transform: scale(1.25);
   }
 </style>

@@ -180,6 +180,11 @@
   .row:hover {
     background: var(--ch-hover);
   }
+  /* Keyboard focus on a row: a quiet highlight, not the global outline. */
+  .row:focus-visible {
+    outline: none;
+    background: var(--ch-hover);
+  }
   .row.on {
     background: var(--ch-accent-soft);
   }

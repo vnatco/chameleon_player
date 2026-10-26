@@ -30,11 +30,22 @@ class LibraryData {
   private selScope: TrackRow[] = [];
   private anchor: number | null = null;
   selIds = $state<Set<number>>(new Set());
+  /** The song list on screen (Songs or an album), for Ctrl+A. Raw, so its
+   * identity matches the list the view passes to `select`. */
+  listed = $state.raw<TrackRow[] | null>(null);
+  /** Right-click menu for an album tile, in window coordinates. */
+  albumMenu = $state<{ x: number; y: number; album: AlbumRow } | null>(null);
   /** Right-click menu for songs, in window coordinates. */
   trackMenu = $state<{ x: number; y: number; tracks: TrackRow[] } | null>(null);
 
   get selected(): TrackRow[] {
     return this.selScope.filter((t) => this.selIds.has(t.id));
+  }
+
+  selectAll(list: TrackRow[]) {
+    this.selScope = list;
+    this.selIds = new Set(list.map((t) => t.id));
+    this.anchor = null;
   }
 
   clearSelection() {
@@ -69,11 +80,24 @@ class LibraryData {
     return true;
   }
 
+  openAlbumMenu(e: MouseEvent, album: AlbumRow) {
+    e.preventDefault();
+    e.stopPropagation();
+    this.trackMenu = null;
+    this.albumMenu = { x: e.clientX, y: e.clientY, album };
+  }
+
+  /** An album's songs in album order (empty, with an error toast, on failure). */
+  async albumTracks(key: string): Promise<TrackRow[]> {
+    return (await app.guard(api.tracks({ albumKey: key }))) ?? [];
+  }
+
   /** Open the song menu: for the whole selection when the song is part of it. */
   openTrackMenu(e: MouseEvent, list: TrackRow[], i: number) {
     e.preventDefault();
     e.stopPropagation();
     const t = list[i];
+    this.albumMenu = null;
     if (list === this.selScope && this.selIds.has(t.id) && this.selIds.size > 1) {
       this.trackMenu = { x: e.clientX, y: e.clientY, tracks: this.selected };
     } else {

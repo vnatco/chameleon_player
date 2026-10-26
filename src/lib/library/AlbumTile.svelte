@@ -1,11 +1,12 @@
 <script lang="ts">
-  // Album tile (spec D2): crisp square; hover lifts 3 px, lights the tile's
-  // own four-side glow and shows a five-swatch palette strip.
+  // Album tile (spec D2): crisp square; hover lifts 3 px and lights the
+  // tile's own four-side glow.
   import { coverUrl, mono, type AlbumRow, type Palette } from "$lib/api";
   import { lib } from "$lib/library.svelte";
   import { rgbCss } from "$lib/palette";
 
   let { album, onopen }: { album: AlbumRow; onopen: () => void } = $props();
+  // Right-click: the album menu (Play, Shuffle, Play Next, Add to Queue).
 
   let pal = $state<Palette | null>(null);
   let hot = $state(false);
@@ -20,19 +21,15 @@
     const g = pal.glow;
     return `0 0 0 1px ${rgbCss(pal.roles.edge)}, 0 -10px 26px -10px ${rgbCss(g.t, 0.9)}, 10px 0 26px -10px ${rgbCss(g.r, 0.9)}, 0 14px 32px -10px ${rgbCss(g.b, 0.95)}, -10px 0 26px -10px ${rgbCss(g.l, 0.9)}`;
   });
-  const swatches = $derived(pal ? [pal.roles.bg, pal.roles.surface2, pal.roles.accent, pal.roles.text, pal.roles.edge].map((c) => rgbCss(c)) : []);
   const flash = $derived(lib.flash === album.key);
 </script>
 
-<button class="tile" onclick={onopen} onmouseenter={enter} onmouseleave={() => (hot = false)} onfocus={enter} onblur={() => (hot = false)} title="{album.title} - {album.artist}">
+<button class="tile" onclick={onopen} oncontextmenu={(e) => lib.openAlbumMenu(e, album)} onmouseenter={enter} onmouseleave={() => (hot = false)} onfocus={enter} onblur={() => (hot = false)} title="{album.title} - {album.artist}">
   <span class="art" class:hot class:flash style:box-shadow={flash ? undefined : shadow} style:--flash-edge={album.cover?.edge} style:--flash-glow={album.cover?.glow}>
     {#if album.cover}
       <img src={coverUrl(album.cover.thumb)} alt="" loading="lazy" decoding="async" />
     {:else}
       <span class="mono-big">{mono(album.title)}</span>
-    {/if}
-    {#if hot && swatches.length}
-      <span class="sw">{#each swatches as c, i (i)}<span style:background={c}></span>{/each}</span>
     {/if}
   </span>
   <span class="meta">
@@ -87,18 +84,6 @@
     color: var(--ch-text-subtle);
     opacity: 0.5;
   }
-  .sw {
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    height: 8px;
-    display: flex;
-    animation: chFadeIn 0.2s ease-out both;
-  }
-  .sw span {
-    flex: 1;
-  }
   /* A cover was just assigned: bloom in its new palette (900 ms). */
   .art.flash {
     animation: bloom 0.9s var(--ease-out) both;
@@ -119,6 +104,10 @@
         0 0 0 1px var(--flash-edge),
         0 8px 24px -8px var(--flash-glow);
     }
+  }
+  /* Keyboard focus: the same lift and glow as hover, no outline. */
+  .tile:focus-visible {
+    outline: none;
   }
   .meta {
     min-width: 0;

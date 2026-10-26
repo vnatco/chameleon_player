@@ -4,8 +4,7 @@
   import { coverUrl, formatTime, mono } from "$lib/api";
   import { lib } from "$lib/library.svelte";
   import { staticVars } from "$lib/palette";
-  import { app, trackOf } from "$lib/state.svelte";
-  import { api } from "$lib/api";
+  import { app } from "$lib/state.svelte";
   import Icon from "$lib/ui/Icon.svelte";
 
   let { onedit }: { onedit: () => void } = $props();
@@ -13,16 +12,14 @@
   const a = $derived(lib.album);
   const vars = $derived(a?.palette ? staticVars(a.palette, app.ui.strength) : "");
   const genre = $derived(a?.tracks.find((t) => t.genre)?.genre ?? "");
+  $effect(() => {
+    lib.listed = a?.tracks ?? null;
+    return () => (lib.listed = null);
+  });
   const total = $derived(a ? a.tracks.reduce((s, t) => s + t.duration, 0) : 0);
 
   function shuffle() {
-    if (!a) return;
-    const list = [...a.tracks];
-    for (let i = list.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [list[i], list[j]] = [list[j], list[i]];
-    }
-    app.guard(api.load(list.map(trackOf), 0, true));
+    if (a) app.playShuffled(a.tracks);
   }
 </script>
 
@@ -64,7 +61,9 @@
           onclick={(e) => lib.select(e, a.tracks, i) || app.playList(a.tracks, i)}
           oncontextmenu={(e) => lib.openTrackMenu(e, a.tracks, i)}
         >
-          <span class="n">{on ? "▶" : (t.trackNo ?? i + 1)}</span>
+          <span class="n">
+            {#if lib.selIds.has(t.id)}<Icon name="check" size={15} stroke={2.4} />{:else}{on ? "▶" : (t.trackNo ?? i + 1)}{/if}
+          </span>
           <span class="tt ellipsis">{t.title}</span>
           <span class="d">{formatTime(t.duration)}</span>
         </button>
@@ -194,9 +193,20 @@
   .tr:hover {
     background: var(--ch-hover);
   }
-  .tr.sel {
+  /* Keyboard focus on a row: a quiet highlight, not the global outline. */
+  .tr:focus-visible {
+    outline: none;
     background: var(--ch-hover);
-    box-shadow: inset 3px 0 0 var(--ch-accent);
+  }
+  /* Selected: a soft accent tint and a check in place of the number. */
+  .tr.sel {
+    background: color-mix(in srgb, var(--ch-accent) 16%, transparent);
+  }
+  .tr.sel:hover {
+    background: color-mix(in srgb, var(--ch-accent) 22%, transparent);
+  }
+  .tr.sel .n {
+    color: var(--ch-accent);
   }
   .tr.on {
     background: var(--ch-accent-soft);
@@ -205,6 +215,9 @@
   }
   .n {
     width: 28px;
+    flex: none;
+    display: flex;
+    align-items: center;
     color: var(--ch-text-subtle);
     font-variant-numeric: tabular-nums;
   }
